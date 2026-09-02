@@ -4,7 +4,7 @@
    ===================================================================== */
 'use strict';
 
-const VERSION = '1.3.5';
+const VERSION = '1.3.6';
 const LS = {
   cfg: 'rs_cfg', session: 'rs_session', cache: 'rs_recipes',
   name: 'rs_name', checks: 'rs_checks', members: 'rs_members',
@@ -778,6 +778,19 @@ $('#li-go').onclick = async (e) => {
   finally { busy(btn, false, 'ログイン'); }
 };
 $('#li-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#li-go').click(); });
+
+// パスワードの中身を確認できるようにする。
+// iOS の自動入力が古いパスワードを入れていても気づけるように。
+$('#li-eye').onclick = () => {
+  const f = $('#li-pass');
+  const show = f.type === 'password';
+  f.type = show ? 'text' : 'password';
+  $('#li-eye').textContent = show ? '隠す' : '表示';
+};
+$('#li-pass').addEventListener('input', (e) => {
+  const n = e.target.value.length;
+  $('#li-len').textContent = n ? `${n} 文字入力されています` : '';
+});
 $('#li-cfg').onclick = () => { $('#cfg-url').value = cfg?.url || ''; $('#cfg-key').value = cfg?.key || ''; show('v-setup'); };
 
 // --- 一覧
