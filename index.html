@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#faf7f2">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="レシピ">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>ふたりのレシピ帳</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#faf7f2; --card:#ffffff; --card2:#f3ede4; --line:#e6ddd0;
+  --tx:#2c2620; --tx2:#7a6d5d; --tx3:#a39684;
+  --accent:#d9633b; --accent-tx:#ffffff; --green:#5c8a4a; --shadow:0 1px 3px rgba(60,45,25,.07);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#17140f; --card:#211d17; --card2:#2b261e; --line:#38312a;
+    --tx:#f0ebe3; --tx2:#a09585; --tx3:#756a5c;
+    --accent:#e8794f; --accent-tx:#1a1611; --green:#7fae68; --shadow:none;
+  }
+}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--bg);color:var(--tx);font-size:16px;line-height:1.6;
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+  padding:env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 90px);
+  -webkit-tap-highlight-color:transparent;overflow-wrap:anywhere;
+}
+.wrap{max-width:720px;margin:0 auto;padding:0 16px}
+.hidden{display:none !important}
+
+/* ---- 汎用 ---- */
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input,textarea,select{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--line);
+  border-radius:10px;padding:11px 12px;width:100%;min-height:44px}
+textarea{min-height:80px;line-height:1.6;resize:vertical}
+input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+label{display:block;font-size:12px;font-weight:700;color:var(--tx2);letter-spacing:.04em;margin:0 0 6px 2px}
+.field{margin-bottom:14px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+.btn{background:var(--card2);border:1px solid var(--line);border-radius:11px;padding:11px 16px;
+  font-size:14px;font-weight:600;min-height:44px;display:inline-flex;align-items:center;justify-content:center;
+  gap:6px;white-space:nowrap}
+.btn:active{filter:brightness(.95)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-tx)}
+.btn.wide{width:100%}
+.btn.sm{padding:7px 12px;font-size:13px;min-height:36px;border-radius:9px}
+.btn.danger{color:#c04a3c;border-color:#e2bdb5}
+.btn:disabled{opacity:.45}
+
+header.bar{display:flex;align-items:center;gap:10px;padding:14px 0 10px;min-height:60px}
+header.bar h1{font-size:19px;font-weight:700;letter-spacing:.01em;flex:1}
+header.bar .ico{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;font-size:18px;
+  background:var(--card2);border:1px solid var(--line);flex:none}
+
+.note{font-size:13px;color:var(--tx2);line-height:1.7}
+.err{background:#fdecea;border:1px solid #f0c2bb;color:#a3392c;border-radius:10px;padding:11px 13px;
+  font-size:13px;margin-bottom:12px;line-height:1.6}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .err{background:#3a1f1a;border-color:#5c342b;color:#f3b4a7}}
+.empty{text-align:center;color:var(--tx3);padding:60px 20px;font-size:14px;line-height:2}
+
+/* ---- 検索・タグ ---- */
+.search{position:relative;margin-bottom:10px}
+.search input{padding-left:38px;border-radius:12px}
+.search::before{content:"🔍";position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:15px;opacity:.55}
+.chips{display:flex;gap:7px;overflow-x:auto;padding:2px 16px 12px;margin:0 -16px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;background:var(--card);border:1px solid var(--line);border-radius:999px;
+  padding:7px 13px;font-size:13px;font-weight:600;color:var(--tx2);white-space:nowrap}
+.chip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-tx)}
+
+/* ---- 一覧カード ---- */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.rc{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  text-align:left;box-shadow:var(--shadow);display:flex;flex-direction:column}
+.rc:active{filter:brightness(.97)}
+.rc .thumb{aspect-ratio:4/3;background:var(--card2);background-size:cover;background-position:center;
+  display:grid;place-items:center;font-size:30px;color:var(--tx3)}
+.rc .body{padding:10px 11px 12px;display:flex;flex-direction:column;gap:5px;flex:1}
+.rc h3{font-size:14px;font-weight:700;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.rc .meta{font-size:11px;color:var(--tx3);margin-top:auto;display:flex;gap:8px;flex-wrap:wrap}
+.rc .tg{font-size:10px;color:var(--tx2);background:var(--card2);border-radius:5px;padding:2px 6px}
+.who{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.who i{width:7px;height:7px;border-radius:50%;background:var(--tx3);flex:none}
+.chip .who i,.pill .who i{width:8px;height:8px}
+.sw{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 16px 2px}
+.sw button{width:40px;height:40px;border-radius:50%;border:3px solid transparent;padding:0}
+.sw button.on{border-color:var(--tx)}
+.fav{position:absolute;top:8px;right:8px;font-size:15px}
+
+/* ---- FAB ---- */
+.fab{position:fixed;right:max(18px,env(safe-area-inset-right));bottom:calc(22px + env(safe-area-inset-bottom));
+  width:58px;height:58px;border-radius:50%;background:var(--accent);color:var(--accent-tx);
+  font-size:28px;display:grid;place-items:center;box-shadow:0 4px 16px rgba(150,70,35,.32);z-index:50}
+.fab:active{transform:scale(.94)}
+
+/* ---- タブ ---- */
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;background:var(--card2);
+  border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:16px}
+.tabs button{border-radius:9px;padding:9px 4px;font-size:13.5px;font-weight:700;color:var(--tx2);min-height:40px}
+.tabs button.on{background:var(--card);color:var(--tx);box-shadow:var(--shadow)}
+
+/* ---- 材料・手順の編集行 ---- */
+.lrow{display:flex;gap:7px;align-items:flex-start;margin-bottom:7px}
+.lrow input,.lrow textarea{border-radius:9px}
+.lrow .del{flex:none;width:32px;min-height:44px;color:var(--tx3);font-size:19px}
+.mv{flex:none;display:flex;gap:3px}
+.mv button{width:28px;min-height:44px;border-radius:8px;color:var(--tx2);font-size:13px;
+  background:var(--card2);border:1px solid var(--line)}
+.mv button:active{filter:brightness(.93)}
+.lrow.srow .mv{flex-direction:column;gap:3px}
+.lrow.srow .mv button{min-height:0;height:26px;width:30px;font-size:11px}
+.lrow.srow textarea{min-height:82px}
+/* 「作った」の取り消し */
+.undo{display:block;margin:-14px auto 0;font-size:12.5px;color:var(--tx3);
+  text-decoration:underline;text-underline-offset:3px;padding:8px}
+.ing-n{flex:1.6}.ing-a{flex:1;min-width:0}
+.sn{flex:none;width:26px;text-align:center;padding-top:12px;font-size:13px;font-weight:700;color:var(--tx3)}
+
+/* ---- 詳細 ---- */
+.hero{aspect-ratio:16/10;background:var(--card2);background-size:cover;background-position:center;
+  border-radius:16px;margin-bottom:16px;display:grid;place-items:center;font-size:42px;color:var(--tx3)}
+h2.dt{font-size:23px;font-weight:700;line-height:1.4;margin-bottom:8px}
+.dmeta{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px}
+.pill{font-size:12px;color:var(--tx2);background:var(--card2);border:1px solid var(--line);border-radius:999px;padding:4px 10px}
+.sec{margin:26px 0 11px;display:flex;align-items:center;gap:10px}
+.sec h3{font-size:12px;font-weight:700;color:var(--tx3);letter-spacing:.1em}
+.sec .line{flex:1;height:1px;background:var(--line)}
+.scaler{display:flex;gap:5px;margin-left:auto}
+.scaler button{font-size:12px;font-weight:700;padding:4px 9px;border-radius:7px;border:1px solid var(--line);color:var(--tx2)}
+.scaler button.on{background:var(--accent);border-color:var(--accent);color:var(--accent-tx)}
+.ing{display:flex;gap:10px;padding:10px 2px;border-bottom:1px solid var(--line);align-items:baseline;font-size:15px}
+.ing.done{opacity:.4;text-decoration:line-through}
+.ing .nm{flex:1}
+.ing .am{color:var(--tx2);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.ing .gp{font-size:11px;font-weight:700;color:var(--accent);width:2.4em;flex:none}
+.step{display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);font-size:15px;line-height:1.75}
+.step b{flex:none;width:24px;height:24px;border-radius:50%;background:var(--accent);color:var(--accent-tx);
+  font-size:12px;display:grid;place-items:center;margin-top:3px}
+.memo{background:var(--card2);border-radius:12px;padding:13px 15px;font-size:14.5px;line-height:1.8;white-space:pre-wrap}
+.dact{display:flex;gap:9px;margin:26px 0 10px}
+
+/* ---- 読み込み中 ---- */
+.spin{display:inline-block;width:15px;height:15px;border:2px solid currentColor;border-right-color:transparent;
+  border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(1turn)}}
+.toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translateX(-50%);
+  background:#2c2620;color:#fff;padding:11px 18px;border-radius:11px;font-size:14px;z-index:200;
+  max-width:88vw;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.25)}
+.lbar{display:flex;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--line);
+  border-radius:11px;padding:9px 12px;margin-bottom:11px;font-size:12.5px;color:var(--tx2);line-height:1.5}
+.lbar b{color:var(--tx);font-weight:700}
+.hr{display:flex;align-items:center;gap:12px;margin:24px 0;color:var(--tx3);font-size:12px}
+.hr::before,.hr::after{content:"";flex:1;height:1px;background:var(--line)}
+.drop{border:2px dashed var(--line);border-radius:14px;padding:26px 16px;text-align:center;color:var(--tx2);font-size:14px;line-height:1.9}
+.drop b{display:block;font-size:32px;margin-bottom:6px}
+</style>
+</head>
+<body>
+
+<!-- ======================= 設定（初回） ======================= -->
+<section id="v-setup" class="wrap hidden">
+  <header class="bar"><h1>接続設定</h1></header>
+  <p class="note" style="margin-bottom:18px">Supabase プロジェクトの URL と anon キーを入れてください。<br>
+    ダッシュボードの <b>Project Settings → API</b> に載っています。この端末にだけ保存されます。</p>
+  <div id="setup-err"></div>
+  <div class="field"><label>Project URL</label><input id="cfg-url" placeholder="https://xxxx.supabase.co" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+  <div class="field"><label>anon public key</label><textarea id="cfg-key" placeholder="eyJhbGciOi..." autocapitalize="off" autocorrect="off" spellcheck="false"></textarea></div>
+  <button class="btn pri wide" id="cfg-save">保存する</button>
+
+  <div class="hr">または</div>
+  <button class="btn wide" id="cfg-demo">まず試してみる（この端末だけに保存）</button>
+  <p class="note" style="margin-top:10px">
+    Supabase の設定なしで、登録・編集・検索・分量換算などをそのまま試せます。<br>
+    サンプルのレシピを3件入れておきます。あとから共有モードに切り替えられます。<br>
+    ※ URL からの自動取り込みだけは、サーバー側の設定が必要なため使えません。</p>
+</section>
+
+<!-- ======================= ログイン ======================= -->
+<section id="v-login" class="wrap hidden">
+  <header class="bar"><h1>ふたりのレシピ帳</h1></header>
+  <div id="login-err"></div>
+  <div class="field"><label>メールアドレス</label><input id="li-mail" type="email" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+  <div class="field"><label>パスワード</label><input id="li-pass" type="password"></div>
+  <button class="btn pri wide" id="li-go">ログイン</button>
+  <p class="note" style="margin-top:16px">アカウントは Supabase ダッシュボードの Authentication → Users で 2 つ作っておいてください。</p>
+  <button class="btn wide sm" id="li-cfg" style="margin-top:22px">接続設定をやり直す</button>
+</section>
+
+<!-- ======================= 一覧 ======================= -->
+<section id="v-list" class="hidden">
+  <div class="wrap">
+    <header class="bar">
+      <h1>ふたりのレシピ帳</h1>
+      <button class="ico" id="go-settings" title="設定">⚙︎</button>
+    </header>
+    <div id="localbar" class="lbar hidden">
+      <span><b>おためしモード</b>／この端末にだけ保存されています</span>
+      <button class="btn sm" id="lb-setup" style="margin-left:auto;flex:none">共有を設定</button>
+    </div>
+    <div class="search"><input id="q" placeholder="料理名・材料・タグで探す" autocapitalize="off"></div>
+  </div>
+  <div class="wrap"><div class="chips" id="tagbar"></div></div>
+  <div class="wrap"><div id="list"></div></div>
+  <button class="fab" id="go-add">＋</button>
+</section>
+
+<!-- ======================= 追加・編集 ======================= -->
+<section id="v-edit" class="wrap hidden">
+  <header class="bar">
+    <button class="ico" data-back>←</button>
+    <h1 id="edit-title">レシピを追加</h1>
+  </header>
+
+  <div class="tabs" id="src-tabs">
+    <button data-src="url">🔗 URL</button>
+    <button data-src="paste">📋 貼り付け</button>
+    <button data-src="manual" class="on">✏️ 手入力</button>
+  </div>
+
+  <div id="pane-url" class="hidden">
+    <div id="url-local" class="lbar hidden" style="display:block">
+      <b>おためしモードでは使えません</b><br>
+      URL の読み取りはブラウザの制約（CORS）でサーバーの中継が必要なため、Supabase の設定が済むと使えるようになります。<br>
+      いまは Safari でレシピページを開き、<b>材料〜作り方をコピーして「📋 貼り付け」</b>に貼るのが確実です。
+    </div>
+    <div class="field">
+      <label>レシピページの URL</label>
+      <input id="in-url" type="url" placeholder="https://cookpad.com/..." autocapitalize="off" autocorrect="off" spellcheck="false">
+    </div>
+    <button class="btn pri wide" id="fetch-url">このページから読み込む</button>
+    <p class="note" style="margin-top:10px">ページに埋め込まれたレシピ情報を読みます。多くのレシピサイトが対応しています。<br>
+      読めなかった場合は本文が「📋 貼り付け」に入るので、そこから整えてください。</p>
+  </div>
+
+  <div id="pane-paste" class="hidden">
+    <div class="field">
+      <label>レシピの文章を貼り付け</label>
+      <textarea id="in-paste" style="min-height:190px" placeholder="肉じゃが&#10;&#10;材料（2人分）&#10;牛こま切れ肉 200g&#10;じゃがいも 3個&#10;しょうゆ 大さじ3&#10;&#10;作り方&#10;1. じゃがいもを一口大に切る&#10;2. 牛肉を炒める"></textarea>
+    </div>
+    <button class="btn pri wide" id="parse-paste">この文章から読み込む</button>
+    <p class="note" style="margin-top:10px">
+      レシピの文章を<b>まるごと貼り付けて構いません</b>。「材料」「作り方」の見出しがあればそれを使い、
+      無い場合も 1行ずつ見て材料と手順に振り分けます。改行の無い文章は「。」で区切ります。<br>
+      読み取り後は編集フォームで直せるので、多少ずれていても大丈夫です。<br>
+      <b>iPhone の場合</b>：料理本やレシピ画面を写真に撮り、写真アプリで文字を長押し →
+      全選択 → コピー して、ここに貼り付けてください（iOS の文字認識は無料で使えます）。</p>
+  </div>
+
+  <div id="ext-err"></div>
+
+  <div id="form">
+    <div class="field"><label>料理名</label><input id="f-title" placeholder="肉じゃが"></div>
+    <div class="field"><label>ひとこと</label><input id="f-desc" placeholder="定番のやつ"></div>
+    <div class="row2">
+      <div class="field"><label>何人分</label><input id="f-serv" placeholder="2人分"></div>
+      <div class="field"><label>時間(分)</label><input id="f-min" type="number" inputmode="numeric" placeholder="30"></div>
+    </div>
+    <div class="field"><label>タグ（カンマ区切り）</label><input id="f-tags" placeholder="和食, 主菜, 煮込み" autocapitalize="off"></div>
+
+    <div class="sec"><h3>材料</h3><div class="line"></div><button class="btn sm" id="add-ing">＋行</button></div>
+    <div id="ings"></div>
+
+    <div class="sec"><h3>手順</h3><div class="line"></div><button class="btn sm" id="add-step">＋行</button></div>
+    <div id="steps"></div>
+
+    <div class="sec"><h3>写真</h3><div class="line"></div></div>
+    <label for="f-photo" class="drop" id="photo-drop"><b>🖼</b>写真を選ぶ</label>
+    <input id="f-photo" type="file" accept="image/*" class="hidden">
+
+    <div class="sec"><h3>うちの味メモ</h3><div class="line"></div></div>
+    <textarea id="f-memo" placeholder="みりんを大さじ1増やすと好みの味"></textarea>
+
+    <div style="display:flex;gap:9px;margin:22px 0 8px">
+      <button class="btn wide" data-back>やめる</button>
+      <button class="btn pri wide" id="save">保存する</button>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= 詳細 ======================= -->
+<section id="v-detail" class="wrap hidden">
+  <header class="bar">
+    <button class="ico" data-back>←</button>
+    <h1 style="font-size:15px;color:var(--tx2)">レシピ</h1>
+    <button class="ico" id="d-fav">☆</button>
+  </header>
+  <div id="detail"></div>
+</section>
+
+<!-- ======================= 設定 ======================= -->
+<section id="v-settings" class="wrap hidden">
+  <header class="bar"><button class="ico" data-back>←</button><h1>設定</h1></header>
+  <div class="field"><label>あなたの表示名</label><input id="s-name" placeholder="りょう"></div>
+  <label>あなたの色</label>
+  <div class="sw" id="s-colors"></div>
+  <button class="btn wide" id="s-savename">表示名と色を保存</button>
+  <p class="note" style="margin-top:10px">レシピ一覧と詳細に「誰が登録したか」がこの名前と色で表示されます。<br>
+    ふたりで違う色にしておくと見分けやすくなります。</p>
+  <div class="sec"><h3>アカウント</h3><div class="line"></div></div>
+  <p class="note" id="s-who" style="margin-bottom:12px"></p>
+  <button class="btn wide" id="s-logout">ログアウト</button>
+  <button class="btn wide pri hidden" id="s-tosupa">Supabase につないで共有する</button>
+  <p class="note hidden" id="s-tosupa-note" style="margin-top:10px">
+    切り替えると接続設定の画面に戻ります。おためしモードで登録したレシピはこの端末に残りますが、
+    共有モードには自動では移りません。</p>
+  <div class="sec"><h3>アプリ</h3><div class="line"></div></div>
+  <button class="btn wide" id="s-reload" style="margin-bottom:9px">サーバーから再読み込み</button>
+  <button class="btn wide danger" id="s-reset">接続設定を消す</button>
+  <p class="note" style="margin-top:20px" id="s-ver"></p>
+</section>
+
+<script src="app.js?v=1.3.4"></script>
+</body>
+</html>
