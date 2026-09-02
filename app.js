@@ -4,7 +4,7 @@
    ===================================================================== */
 'use strict';
 
-const VERSION = '1.3.4';
+const VERSION = '1.3.5';
 const LS = {
   cfg: 'rs_cfg', session: 'rs_session', cache: 'rs_recipes',
   name: 'rs_name', checks: 'rs_checks', members: 'rs_members',
@@ -115,11 +115,10 @@ function logout() {
 
 /* ------------------------------------------------- Supabase 呼び出し */
 async function call(path, opts = {}, retry = true) {
-  const headers = {
-    apikey: cfg.key,
-    Authorization: `Bearer ${session?.access_token ?? cfg.key}`,
-    ...(opts.headers || {}),
-  };
+  // apikey は常に付ける。Authorization はログイン後のトークンだけを載せる。
+  // （新形式の sb_publishable_... は JWT ではないため Bearer には使えない）
+  const headers = { apikey: cfg.key, ...(opts.headers || {}) };
+  if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
   if (opts.body && !(opts.body instanceof Blob) && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
