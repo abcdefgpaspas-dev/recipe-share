@@ -4,7 +4,7 @@
    ===================================================================== */
 'use strict';
 
-const VERSION = '1.3.6';
+const VERSION = '1.3.7';
 const LS = {
   cfg: 'rs_cfg', session: 'rs_session', cache: 'rs_recipes',
   name: 'rs_name', checks: 'rs_checks', members: 'rs_members',
@@ -35,6 +35,12 @@ const uuid = () => (crypto?.randomUUID ? crypto.randomUUID()
       const r = Math.random() * 16 | 0;
       return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
     }));
+
+// 日本語キーボードだと英数字が全角で入ることがある。
+// 見た目は同じでもサーバーには別の文字列として届くため、半角に直す。
+const toHalf = (v) => String(v ?? '')
+  .replace(/[\uFF01-\uFF5E]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+  .replace(/\u3000/g, ' ');
 
 const load = (k, d = null) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
 const save = (k, v) => {
@@ -670,8 +676,8 @@ document.addEventListener('click', (e) => {
 
 // --- 設定
 $('#cfg-save').onclick = () => {
-  const url = $('#cfg-url').value.trim().replace(/\/+$/, '');
-  const key = $('#cfg-key').value.trim();
+  const url = toHalf($('#cfg-url').value).trim().replace(/\/+$/, '');
+  const key = toHalf($('#cfg-key').value).trim();
   if (!/^https:\/\/.+/.test(url) || key.length < 20) {
     return showErr('#setup-err', 'URL と anon キーを正しく入れてください');
   }
@@ -770,7 +776,14 @@ $('#li-go').onclick = async (e) => {
   showErr('#login-err', '');
   busy(btn, true, 'ログイン中');
   try {
-    await login($('#li-mail').value.trim(), $('#li-pass').value);
+    const rawMail = $('#li-mail').value, rawPass = $('#li-pass').value;
+    const mail = toHalf(rawMail).trim(), pass = toHalf(rawPass).trim();
+    if (mail !== rawMail.trim() || pass !== rawPass.trim()) {
+      toast('全角の文字が含まれていたので半角に直しました');
+      $('#li-mail').value = mail;
+    }
+    if (!pass) { showErr('#login-err', 'パスワードが空です'); return; }
+    await login(mail, pass);
     $('#li-pass').value = '';
     applyMode();
     show('v-list'); renderList(); await sync();
