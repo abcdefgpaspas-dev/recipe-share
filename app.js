@@ -4,11 +4,11 @@
    ===================================================================== */
 'use strict';
 
-const VERSION = '1.3.7';
+const VERSION = '1.3.8';
 const LS = {
   cfg: 'rs_cfg', session: 'rs_session', cache: 'rs_recipes',
   name: 'rs_name', checks: 'rs_checks', members: 'rs_members',
-  local: 'rs_local', logs: 'rs_logs',
+  local: 'rs_local', logs: 'rs_logs', queue: 'rs_queue',
 };
 
 // 表示名の色。ふたりで違う色を選べるように
@@ -120,6 +120,10 @@ function logout() {
 }
 
 /* ------------------------------------------------- Supabase 呼び出し */
+// 電波がない・サーバーに届かないときのエラー。これだけは「あとで送る」対象にする
+const offlineErr = () => Object.assign(
+  new Error('オフラインです。通信が戻ってからもう一度お試しください'), { offline: true });
+
 async function call(path, opts = {}, retry = true) {
   // apikey は常に付ける。Authorization はログイン後のトークンだけを載せる。
   // （新形式の sb_publishable_... は JWT ではないため Bearer には使えない）
@@ -128,12 +132,19 @@ async function call(path, opts = {}, retry = true) {
   if (opts.body && !(opts.body instanceof Blob) && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
-  const r = await fetch(`${cfg.url}${path}`, { ...opts, headers });
-  if (r.status === 401 && retry && (await refresh()) === true) return call(path, opts, false);
+  if (navigator.onLine === false) throw offlineErr();
+  let r;
+  try { r = await fetch(`${cfg.url}${path}`, { ...opts, headers }); }
+  catch { throw offlineErr(); }
+  if (r.status === 401 && retry) {
+    const ok = await refresh();
+    if (ok === true) return call(path, opts, false);
+    if (ok === 'offline') throw offlineErr();
+  }
   if (!r.ok) {
     let msg = `${r.status}`;
     try { const d = await r.json(); msg = d.message || d.error || d.hint || msg; } catch { /* noop */ }
-    throw new Error(msg);
+    throw Object.assign(new Error(msg), { status: r.status });
   }
   return r.status === 204 ? null : r.json();
 }
@@ -188,6 +199,7 @@ const db = {
   update: (id, p) => localMode ? L.update(id, p)
     : call(`/rest/v1/recipes?id=eq.${id}`, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify(p) }).then((a) => a[0]),
   remove: (id)    => localMode ? L.remove(id) : call(`/rest/v1/recipes?id=eq.${id}`, { method: 'DELETE' }),
+  one:    (id)    => call(`/rest/v1/recipes?id=eq.${id}&select=*`).then((a) => a[0]),
   cooked: (id)    => localMode ? L.cooked(id)
     : call('/rest/v1/cook_logs', { method: 'POST', body: JSON.stringify({ recipe_id: id, cooked_by: session?.user?.id ?? null }) }),
   lastLog: (id)   => localMode ? L.lastLog(id)
@@ -202,19 +214,159 @@ const db = {
       }),
 };
 
+/* ------------------------------------- オフライン時の送信待ちキュー
+   共有モードで通信できないときは、変更を端末に貯めておき、
+   通信が戻ったら古い順にサーバーへ送る。 */
+const Q = {
+  get() { return load(LS.queue, []); },
+  set(q) { save(LS.queue, q); },
+  // 同じレシピへの変更はなるべく1件にまとめる
+  add(op) {
+    let q = this.get();
+    op.qid = uuid(); op.ts = new Date().toISOString();
+    if (op.type === 'update') {
+      const prev = q.find((x) => x.id === op.id && (x.type === 'insert' || x.type === 'update'));
+      if (prev?.type === 'insert') { prev.row = { ...prev.row, ...op.patch }; return this.set(q); }
+      if (prev) { prev.patch = { ...prev.patch, ...op.patch }; return this.set(q); }
+    }
+    if (op.type === 'remove') {
+      const neverSent = q.some((x) => x.id === op.id && x.type === 'insert');
+      q = q.filter((x) => x.id !== op.id);
+      if (neverSent) return this.set(q);   // まだ送っていない新規なら消すだけで済む
+    }
+    q.push(op); this.set(q);
+  },
+  drop(qid) { this.set(this.get().filter((x) => x.qid !== qid)); },
+};
+const pendingIds = () => new Set(Q.get().map((x) => x.id));
+const today = () => new Date().toISOString().slice(0, 10);
+
+// 送信待ちの変更をサーバーのデータに重ねる（送るまで画面から消えないように）
+function applyQueue(list) {
+  let out = [...list];
+  for (const op of Q.get()) {
+    if (op.type === 'insert' && !out.some((r) => r.id === op.id)) {
+      out.unshift({ created_at: op.ts, favorite: false, cook_count: 0, last_cooked_on: null, ...op.row });
+    } else if (op.type === 'update') {
+      out = out.map((r) => (r.id === op.id ? { ...r, ...op.patch } : r));
+    } else if (op.type === 'remove') {
+      out = out.filter((r) => r.id !== op.id);
+    } else if (op.type === 'cooked') {
+      out = out.map((r) => (r.id === op.id
+        ? { ...r, cook_count: (r.cook_count || 0) + 1, last_cooked_on: op.cooked_on } : r));
+    }
+  }
+  return out;
+}
+
+// data: URL の画像は送信前に Storage へ上げて URL に置き換える
+async function uploadInline(obj) {
+  if (!/^data:image\//.test(obj?.image_url || '')) return obj;
+  const blob = await (await fetch(obj.image_url)).blob();
+  return { ...obj, image_url: await putImage(blob) };
+}
+
+async function sendOp(op) {
+  if (op.type === 'insert') {
+    const row = await uploadInline(op.row);
+    // 届いたのに返事だけ失敗した場合の再送でも二重登録にならないよう upsert
+    return call('/rest/v1/recipes?on_conflict=id', {
+      method: 'POST', headers: { Prefer: 'return=minimal,resolution=merge-duplicates' },
+      body: JSON.stringify(row),
+    });
+  }
+  if (op.type === 'update') return db.update(op.id, await uploadInline(op.patch));
+  if (op.type === 'remove') return db.remove(op.id);
+  if (op.type === 'cooked') {
+    return call('/rest/v1/cook_logs', { method: 'POST',
+      body: JSON.stringify({ recipe_id: op.id, cooked_by: op.cooked_by, cooked_on: op.cooked_on }) });
+  }
+}
+
+let flushing = null;
+// 送信できた件数を返す
+function flush() {
+  if (localMode || !session?.access_token) return Promise.resolve(0);
+  return (flushing ||= (async () => {
+    let sent = 0;
+    for (const op of Q.get()) {
+      try { await sendOp(op); Q.drop(op.qid); sent++; }
+      catch (e) {
+        // 通信できない・ログイン切れは、そのまま残して次の機会に再送
+        if (e.offline || e.status === 401) break;
+        // サーバーに拒否された変更（すでに削除済みなど）は詰まらないよう捨てる
+        Q.drop(op.qid);
+        toast(`送れなかった変更があります: ${e.message}`, 4000);
+      }
+    }
+    return sent;
+  })().finally(() => { flushing = null; }));
+}
+
+let lastQueued = false;
+// サーバーへ送る。通信できなければキューに積んで、画面用の結果を返す
+async function remote(op, send, local) {
+  lastQueued = false;
+  if (localMode) return send();
+  if (Q.get().length) await flush();       // 順番を守るため、先に古い変更を送る
+  if (!Q.get().length) {
+    try { return await send(); } catch (e) { if (!e.offline) throw e; }
+  }
+  Q.add(op); lastQueued = true;
+  return local();
+}
+
+const rdb = {
+  insert(row) {
+    if (localMode) return db.insert(row);
+    const r = { ...row, id: uuid() };
+    return remote({ type: 'insert', id: r.id, row: r }, () => sendOp({ type: 'insert', row: r }).then(() => db.one(r.id)),
+      () => applyQueue([]).find((x) => x.id === r.id));
+  },
+  update(id, patch) {
+    return remote({ type: 'update', id, patch }, () => sendOp({ type: 'update', id, patch }),
+      () => ({ ...recipes.find((x) => x.id === id), ...patch }));
+  },
+  remove(id) {
+    return remote({ type: 'remove', id }, () => db.remove(id), () => null);
+  },
+  cooked(id) {
+    const op = { type: 'cooked', id, cooked_by: session?.user?.id ?? null, cooked_on: today() };
+    return remote(op, () => db.cooked(id), () => {
+      recipes = recipes.map((r) => (r.id === id
+        ? { ...r, cook_count: (r.cook_count || 0) + 1, last_cooked_on: op.cooked_on } : r));
+      save(LS.cache, recipes);
+    });
+  },
+};
+
 async function uploadImage(blob) {
   if (localMode) {
     // 端末内保存。容量を食わないよう小さめに作り直す
     const small = await shrink(new File([blob], 'p.jpg', { type: 'image/jpeg' }), 900, 0.7);
     return 'data:image/jpeg;base64,' + await blobToBase64(small);
   }
+  try { return await putImage(blob); }
+  catch (e) {
+    if (!e.offline) throw e;
+    // オフライン中は端末内に小さく持っておき、送信時にアップロードする
+    const small = await shrink(new File([blob], 'p.jpg', { type: 'image/jpeg' }), 900, 0.7);
+    return 'data:image/jpeg;base64,' + await blobToBase64(small);
+  }
+}
+
+async function putImage(blob) {
+  if (navigator.onLine === false) throw offlineErr();
   const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
-  const r = await fetch(`${cfg.url}/storage/v1/object/recipe-images/${path}`, {
-    method: 'POST',
-    headers: { apikey: cfg.key, Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'image/jpeg', 'x-upsert': 'true' },
-    body: blob,
-  });
-  if (!r.ok) throw new Error('画像をアップロードできませんでした');
+  let r;
+  try {
+    r = await fetch(`${cfg.url}/storage/v1/object/recipe-images/${path}`, {
+      method: 'POST',
+      headers: { apikey: cfg.key, Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'image/jpeg', 'x-upsert': 'true' },
+      body: blob,
+    });
+  } catch { throw offlineErr(); }
+  if (!r.ok) throw Object.assign(new Error('画像をアップロードできませんでした'), { status: r.status });
   return `${cfg.url}/storage/v1/object/public/recipe-images/${path}`;
 }
 
@@ -451,6 +603,7 @@ function renderList() {
       : '<div class="empty">まだレシピがありません<br>右下の ＋ から追加してください</div>';
     return;
   }
+  const pend = pendingIds();
   box.innerHTML = `<div class="grid">${rows.map((r) => `
     <button class="rc" data-id="${r.id}" style="position:relative">
       ${r.favorite ? '<span class="fav">★</span>' : ''}
@@ -462,6 +615,7 @@ function renderList() {
           ${whoBadge(r.created_by)}
           ${r.prep_minutes ? `<span>⏱ ${r.prep_minutes}分</span>` : ''}
           ${r.cook_count ? `<span>🍽 ${r.cook_count}回</span>` : ''}
+          ${pend.has(r.id) ? '<span title="通信が戻ったら自動で送信します">⏳ 未送信</span>' : ''}
         </div>
       </div>
     </button>`).join('')}</div>`;
@@ -474,13 +628,16 @@ async function sync() {
     return renderList();
   }
   try {
+    const sent = await flush();
+    if (sent) toast(`オフライン中の変更 ${sent}件を送信しました`);
     const [rs, ms] = await Promise.all([db.list(), db.members()]);
-    recipes = rs; members = ms;
+    recipes = applyQueue(rs); members = ms;
     save(LS.cache, recipes); save(LS.members, members);
     await ensureMember();
     renderList();
     if (current) { current = recipes.find((r) => r.id === current.id) || current; }
   } catch (e) {
+    renderList();
     toast(recipes.length ? 'オフライン表示中' : `読み込みに失敗しました: ${e.message}`);
   }
 }
@@ -919,13 +1076,13 @@ $('#save').onclick = async (e) => {
   busy(btn, true, '保存中');
   try {
     if (editing) {
-      const saved = await db.update(editing.id, row);
+      const saved = await rdb.update(editing.id, row);
       recipes = recipes.map((r) => (r.id === saved.id ? saved : r));
       current = saved;
       save(LS.cache, recipes);
       renderList(); renderDetail(saved);
     } else {
-      const saved = await db.insert({
+      const saved = await rdb.insert({
         ...row,
         source_type: $('#form').dataset.sourceType || 'manual',
         source_url:  $('#form').dataset.sourceUrl || null,
@@ -935,7 +1092,7 @@ $('#save').onclick = async (e) => {
       delete $('#form').dataset.sourceUrl; delete $('#form').dataset.sourceType;
       renderList(); renderDetail(saved);
     }
-    toast('保存しました');
+    toast(lastQueued ? '端末に保存しました（通信が戻ったら自動で共有します）' : '保存しました', lastQueued ? 3500 : 2200);
   } catch (err) { toast(`保存できませんでした: ${err.message}`); }
   finally { busy(btn, false, '保存する'); }
 };
@@ -961,11 +1118,11 @@ $('#detail').addEventListener('click', async (e) => {
     const btn = e.target.closest('#d-cooked');
     busy(btn, true, '記録中');
     try {
-      await db.cooked(current.id);
-      await sync();
+      await rdb.cooked(current.id);
+      if (!lastQueued) await sync();
       const r = recipes.find((x) => x.id === current.id);
       if (r) renderDetail(r);
-      toast('作った記録を残しました');
+      toast(lastQueued ? '作った記録を端末に残しました（あとで送信）' : '作った記録を残しました');
     } catch (err) { toast(err.message); }
     finally { busy(btn, false, '🍽 作った'); }
   }
@@ -973,6 +1130,18 @@ $('#detail').addEventListener('click', async (e) => {
   if (e.target.closest('#d-uncook')) {
     const btn = e.target.closest('#d-uncook');
     btn.textContent = '取り消しています…';
+    const q = Q.get();
+    const mine = q.filter((x) => x.type === 'cooked' && x.id === current.id).pop();
+    if (!localMode && mine) {
+      Q.drop(mine.qid);
+      const left = q.filter((x) => x.type === 'cooked' && x.id === current.id && x !== mine).pop();
+      recipes = recipes.map((r) => (r.id === current.id ? { ...r,
+        cook_count: Math.max(0, (r.cook_count || 1) - 1),
+        last_cooked_on: left ? left.cooked_on : r.last_cooked_on } : r));
+      save(LS.cache, recipes); renderList();
+      renderDetail(recipes.find((x) => x.id === current.id));
+      return toast(`${mine.cooked_on} の記録（未送信）を取り消しました`);
+    }
     try {
       const [log] = await db.lastLog(current.id);
       if (!log) { toast('取り消せる記録がありません'); return; }
@@ -988,7 +1157,7 @@ $('#detail').addEventListener('click', async (e) => {
   if (e.target.closest('#d-del')) {
     if (!confirm(`「${current.title}」を削除します。よろしいですか？`)) return;
     try {
-      await db.remove(current.id);
+      await rdb.remove(current.id);
       recipes = recipes.filter((r) => r.id !== current.id);
       save(LS.cache, recipes);
       current = null; show('v-list'); renderList(); toast('削除しました');
@@ -1001,7 +1170,7 @@ $('#d-fav').onclick = async () => {
   const fav = !current.favorite;
   $('#d-fav').textContent = fav ? '★' : '☆';
   try {
-    const saved = await db.update(current.id, { favorite: fav });
+    const saved = await rdb.update(current.id, { favorite: fav });
     current = saved;
     recipes = recipes.map((r) => (r.id === saved.id ? saved : r));
     save(LS.cache, recipes); renderList();
@@ -1042,6 +1211,9 @@ $('#s-reset').onclick = () => {
   if (ok === 'offline') return toast('オフライン表示中');
   await sync();
 })();
+
+// 通信が戻ったら送信待ちを送って最新にする
+window.addEventListener('online', () => { if (!localMode && session?.access_token) sync(); });
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
