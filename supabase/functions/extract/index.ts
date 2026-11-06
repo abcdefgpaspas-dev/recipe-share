@@ -37,7 +37,7 @@ const RECIPE_TOOL = {
   input_schema: {
     type: "object",
     properties: {
-      title: { type: "string", description: "料理名。簡潔に。" },
+      title: { type: "string", description: "料理名だけを簡潔に。「材料」「作り方」などの見出し、人数（2人分など）、サイト名・投稿者名、☆や絵文字は含めない。本文に料理名が書かれていなければ材料と手順から料理名を考える。" },
       description: { type: "string", description: "ひとことでどんな料理か。無ければ空文字。" },
       servings: { type: "string", description: "何人分か。例「2人分」。不明なら空文字。" },
       prep_minutes: { type: "integer", description: "調理時間の目安(分)。不明なら 0。" },
