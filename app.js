@@ -4,7 +4,7 @@
    ===================================================================== */
 'use strict';
 
-const VERSION = '1.3.8';
+const VERSION = '1.3.9';
 const LS = {
   cfg: 'rs_cfg', session: 'rs_session', cache: 'rs_recipes',
   name: 'rs_name', checks: 'rs_checks', members: 'rs_members',
@@ -435,7 +435,7 @@ function parseWithHeadings(lines) {
     }
     if (RE_STEP_HEAD.test(l)) { mode = 'step'; continue; }
     if (mode === 'head') {
-      if (!r.title && l.length <= 40) r.title = l.replace(/^[#＃\s]+/, '');
+      if (!r.title && titleLike(l)) r.title = cleanTitle(l);
       continue;
     }
     if (mode === 'ing') {
@@ -461,7 +461,7 @@ function parseLoose(lines) {
   for (const l of lines) {
     const sv = l.match(/([0-9０-９]+\s*人分)/);
     if (sv && !r.servings) r.servings = sv[1];
-    if (!r.title && l.length <= 30 && !RE_UNIT.test(l) && !/[。、]$/.test(l)) { r.title = cleanTitle(l); continue; }
+    if (!r.title && titleLike(l) && !/[、]$/.test(l)) { r.title = cleanTitle(l); continue; }
     if (looksIngredient(l)) {
       const ing = splitIng(stripBullet(l));
       if (ing.name) r.ingredients.push(ing);
@@ -490,9 +490,52 @@ function mineIngredients(text) {
   return out;
 }
 
-// 「無限ピーマンの作り方です。」→「無限ピーマン」
-const cleanTitle = (l) => l.replace(/[。！\.]+$/, '').replace(/です$/, '')
-  .replace(/(の)?(作\s*り\s*方|つくり方|レシピ)$/, '').trim().slice(0, 40);
+// 「無限ピーマンの作り方です。」→「無限ピーマン」、「☆親子丼☆」→「親子丼」
+const DECO = '☆★◎◆◇■□●○♪♡❤︎✨🍳\\s#＃';
+const cleanTitle = (l) => String(l || '')
+  .replace(new RegExp(`^[${DECO}]+|[${DECO}]+$`, 'gu'), '')
+  .replace(/[。！!\.]+$/, '').replace(/です$/, '')
+  .replace(/(の)?(簡単)?(作\s*り\s*方|つくり方|レシピ)$/, '').trim().slice(0, 40);
+
+// 料理名になってはいけない行：見出し・人数・手順番号・SNS の定型文・URL など
+const RE_NOT_TITLE = new RegExp([
+  '^[■□◆◇●○・\\[【(（\\s]*(材\\s*料|作\\s*り\\s*方|つくり方|作りかた|手\\s*順|調理手順|下ごしらえ|ポイント|コツ|memo|メモ|ingredients|instructions|directions|method|steps)',
+  '^[(（]?[0-9０-９]+\\s*[〜～-]?\\s*[0-9０-９]*\\s*人(分|前)',
+  '^[(（]?[0-9０-９]{1,2}\\s*[.．)）、:：]', '^[①-⑳❶-❿]', '^(step|手順)\\s*[0-9０-９]',
+  'https?://', '^@', '#\\S+.*#\\S+', '^[＼\\\\].*[／/]$',
+  '^(instagram|youtube|tiktok|twitter|facebook|x|ログイン|log ?in|保存|いいね|フォロー|コメント|シェア)$',
+  'いいね[!！]?|保存して|フォローして|コメント(して|ください)',
+].join('|'), 'i');
+function titleLike(l) {
+  const t = cleanTitle(l);
+  // 「〜を紹介します。」のような文章は料理名ではない
+  if (/[。]$|(ます|です|ました|ください|でした)[。！!]?$/.test(String(l).trim())) return false;
+  return t.length >= 2 && t.length <= 40 && !RE_NOT_TITLE.test(t) && !RE_NOT_TITLE.test(l.trim())
+    && !RE_UNIT.test(t) && !/[。]/.test(t);
+}
+
+// 見出しより前の行 → 「〇〇の作り方」→【〇〇】の順に探す。見つからなければ空
+function guessTitle(lines, text) {
+  for (const l of lines) {
+    if (RE_ING_HEAD.test(l) || RE_STEP_HEAD.test(l)) break;
+    if (titleLike(l)) return cleanTitle(l);
+  }
+  const m = String(text).match(/([^\s。、！!「」『』\n]{2,20})の(?:簡単)?(?:作り方|レシピ)/)
+         || String(text).match(/【([^】]{2,20})】/);
+  const name = m ? m[1].replace(/^(今日|今回|本日|きょう|こんかい)(は|も)/, '') : '';
+  return titleLike(name) ? cleanTitle(name) : '';
+}
+
+// ページの <title> からサイト名などを落とす。「ナスの豚しゃぶ | ○○ブログ」→「ナスの豚しゃぶ」
+function cleanPageTitle(t) {
+  let s = String(t || '').trim();
+  const ig = s.match(/on Instagram[:：]\s*["“]?([^"”]*)/i);   // 「ユーザー on Instagram: "本文…"」
+  if (ig) s = ig[1].split(/[\s。！!]/)[0];
+  s = s.split(/\s+[|｜\-–—]\s+|｜|【[^】]*(クックパッド|cookpad|レシピ)[^】]*】/i)[0];
+  s = s.replace(/\s*by\s+\S+.*$/i, '').replace(/(の)?(人気|簡単)?(レシピ|作り方)[・･\s]*(作り方|レシピ)?$/, '');
+  s = cleanTitle(s);
+  return titleLike(s) ? s : '';
+}
 
 // 手順の行頭の番号を落とす。長すぎる行は「。」で分ける
 function pushStep(arr, line) {
@@ -518,8 +561,8 @@ function parseRecipeText(src) {
   if (!r) return null;
   // 材料が拾えていなければ、文章の中から探す
   if (!r.ingredients.length) r.ingredients = mineIngredients(text);
-  // 題名が空なら1行目から作る
-  if (!r.title) r.title = cleanTitle(lines[0]);
+  // 題名が空なら文章から推測する（見出し行を料理名にしない）
+  if (!r.title) r.title = guessTitle(lines, text);
   return r;
 }
 
@@ -773,7 +816,8 @@ function openEditor(r) {
 }
 
 function fillForm(x) {
-  if (x.title) $('#f-title').value = x.title;
+  const title = titleLike(x.title || '') ? cleanTitle(x.title) : '';
+  if (title) $('#f-title').value = title;
   if (x.description) $('#f-desc').value = x.description;
   if (x.servings) $('#f-serv').value = x.servings;
   if (x.prep_minutes) $('#f-min').value = x.prep_minutes;
@@ -791,6 +835,10 @@ function fillForm(x) {
     x.steps.forEach((s, i) => $('#steps').append(stepRow(typeof s === 'string' ? s : s.text, i + 1)));
   }
   setTab('manual');
+  if (!$('#f-title').value.trim()) {
+    $('#f-title').focus();
+    return toast('料理名が見つかりませんでした。料理名だけ入れて保存してください', 3500);
+  }
   toast('読み込みました。内容を確認して保存してください');
 }
 
@@ -1028,7 +1076,7 @@ $('#fetch-url').onclick = async (e) => {
     $('#in-paste').value = res.text.slice(0, 12000);
     const parsed = parseRecipeText(res.text);
     if (parsed) {
-      if (res.page_title) parsed.title = res.page_title;
+      parsed.title = cleanPageTitle(res.page_title) || parsed.title;
       if (res.image_url) parsed.image_url = res.image_url;
       fillForm(parsed);
       toast('本文から読み取りました。内容を確認してください');
